@@ -20,6 +20,8 @@ namespace AvaloniaVncClient.Views
         private Border BottomDockPanel => this.FindControl<Border>("BottomDockPanel");
         private Border RightDockPanel => this.FindControl<Border>("RightDockPanel");
 
+        private bool _isFullscreen = false;
+
         public MainWindow()
         {
             InitializeComponent();
@@ -47,10 +49,10 @@ namespace AvaloniaVncClient.Views
                 }).DisposeWith(disposable);
             });
 
-            // Register keybinding for exiting fullscreen
+            // Register keybinding for toggleing fullscreen mode
             KeyBindings.Add(new KeyBinding {
-                Gesture = new KeyGesture(Key.Escape, KeyModifiers.Control),
-                Command = ReactiveCommand.Create(() => SetFullscreenMode(false))
+                Gesture = new KeyGesture(Key.F10),
+                Command = ReactiveCommand.Create(() => SetFullscreenMode(!_isFullscreen))
             });
 
             AvaloniaXamlLoader.Load(this);
@@ -65,6 +67,8 @@ namespace AvaloniaVncClient.Views
             TopDockPanel.IsVisible = !fullscreen;
             BottomDockPanel.IsVisible = !fullscreen;
             RightDockPanel.IsVisible = !fullscreen;
+
+            _isFullscreen = fullscreen;
         }
     }
 }

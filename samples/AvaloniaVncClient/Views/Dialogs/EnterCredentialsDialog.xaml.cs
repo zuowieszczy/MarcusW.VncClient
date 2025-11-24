@@ -18,6 +18,11 @@ namespace AvaloniaVncClient.Views.Dialogs
         private void InitializeComponent()
         {
             AvaloniaXamlLoader.Load(this);
+            this.Loaded += (sender, e) => UsernameTextBox.Focus();
+            UsernameTextBox.KeyBindings.Add(new Avalonia.Input.KeyBinding { Command = ReactiveUI.ReactiveCommand.Create(() => Close((UsernameTextBox.Text, PasswordTextBox.Text))), Gesture = new Avalonia.Input.KeyGesture(Avalonia.Input.Key.Enter) });
+            UsernameTextBox.KeyBindings.Add(new Avalonia.Input.KeyBinding { Command = ReactiveUI.ReactiveCommand.Create(() => Close(null)), Gesture = new Avalonia.Input.KeyGesture(Avalonia.Input.Key.Escape) });
+            PasswordTextBox.KeyBindings.Add(new Avalonia.Input.KeyBinding { Command = ReactiveUI.ReactiveCommand.Create(() => Close((UsernameTextBox.Text, PasswordTextBox.Text))), Gesture = new Avalonia.Input.KeyGesture(Avalonia.Input.Key.Enter) });
+            PasswordTextBox.KeyBindings.Add(new Avalonia.Input.KeyBinding { Command = ReactiveUI.ReactiveCommand.Create(() => Close(null)), Gesture = new Avalonia.Input.KeyGesture(Avalonia.Input.Key.Escape) });
         }
 
         public void OnCancelClick(object sender, RoutedEventArgs e)
