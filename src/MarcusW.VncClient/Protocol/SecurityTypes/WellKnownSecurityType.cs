@@ -14,13 +14,15 @@ namespace MarcusW.VncClient.Protocol.SecurityTypes
         RA2 = 5,
         RA2ne = 6,
         Tight = 16,
-        Ultra = 17,
+        UltraVNC = 17,
         TLS = 18,
         VeNCrypt = 19,
         SASL = 20,
         MD5 = 21,
         XVP = 22,
         SecureTunnel = 23,
-        IntegratedSSH = 24
+        IntegratedSSH = 24,
+        UltraVNCMSLogonI = 112,
+        UltraVNCMSLogonII = 113
     }
 }

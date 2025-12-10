@@ -1,4 +1,4 @@
-﻿using Avalonia;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Logging;
 using Avalonia.ReactiveUI;
@@ -21,8 +21,9 @@ namespace AvaloniaVncClient
 #else
             LogEventLevel logLevel = LogEventLevel.Warning;
 #endif
-
-            return AppBuilder.Configure<App>().UsePlatformDetect().LogToTrace(logLevel).UseReactiveUI();
+            // Enable Skia GPU rendering with a 256 MB (256*1024*1024) resource cache.
+            //return AppBuilder.Configure<App>().UsePlatformDetect().With(new SkiaOptions {MaxGpuResourceSizeBytes=256*1024*1024}).With(new Win32PlatformOptions { RenderingMode = [Win32RenderingMode.AngleEgl] }).LogToTrace(logLevel).UseReactiveUI();
+            return AppBuilder.Configure<App>().UsePlatformDetect().With(new SkiaOptions { MaxGpuResourceSizeBytes = 256 * 1024 * 1024 }).LogToTrace(logLevel).UseReactiveUI();
         }
     }
 }

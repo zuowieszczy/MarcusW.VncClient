@@ -131,8 +131,9 @@ namespace MarcusW.VncClient.Protocol.Implementation
             
             // Extended authentication with additional features
             yield return new TightSecurityType(context);
-            yield return new UltraSecurityType(context);
-            
+            yield return new UltraVNCSecurityType(context);
+            //yield return new UvncMsLogonIISecurityType(context);
+
             // Encrypted transport security types
             yield return new TlsSecurityType(context);
             yield return new VeNCryptAuthenticationSecurityType(context);
@@ -189,7 +190,7 @@ namespace MarcusW.VncClient.Protocol.Implementation
             yield return new RawEncodingType();
             yield return new CopyRectEncodingType();
             yield return new ZLibEncodingType(context);
-            yield return new ZrleEncodingType(context);
+            //yield return new ZrleEncodingType(context); //zrle is not working with UVNC
             if (IsTightAvailable)
                 yield return new TightEncodingType(context);
             else

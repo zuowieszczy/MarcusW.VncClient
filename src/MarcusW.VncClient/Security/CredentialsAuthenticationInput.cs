@@ -20,6 +20,7 @@ namespace MarcusW.VncClient.Security
         /// <summary>
         /// Initializes a new instance of <see cref="CredentialsAuthenticationInput"/>.
         /// </summary>
+        /// <param name="username">The requested username (or domain\username, or username@domain, etc.)</param>
         /// <param name="password">The requested password.</param>
         public CredentialsAuthenticationInput(string username, string password)
         {

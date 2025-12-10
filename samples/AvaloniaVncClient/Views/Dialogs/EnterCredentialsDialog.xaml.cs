@@ -7,8 +7,9 @@ namespace AvaloniaVncClient.Views.Dialogs
 {
     public class EnterCreadentialsDialog : Window
     {
-        private TextBox UsernameTextBox => this.FindControl<TextBox>("UsernameTextBox");
-        private TextBox PasswordTextBox => this.FindControl<TextBox>("PasswordTextBox");
+        private TextBox UsernameTextBox => this.FindControl<TextBox>("UsernameTextBox")!;
+
+        private TextBox PasswordTextBox => this.FindControl<TextBox>("PasswordTextBox")!;
 
         public EnterCreadentialsDialog()
         {
