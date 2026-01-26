@@ -13,6 +13,8 @@ namespace MarcusW.VncClient.Protocol.SecurityTypes
         VncAuthentication = 2,
         RA2 = 5,
         RA2ne = 6,
+        RA2_256 = 129,
+        RA2ne_256 = 130,
         Tight = 16,
         UltraVNC = 17,
         TLS = 18,

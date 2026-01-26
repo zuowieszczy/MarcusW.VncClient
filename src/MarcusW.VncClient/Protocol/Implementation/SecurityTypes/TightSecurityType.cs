@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,8 +13,8 @@ using MarcusW.VncClient.Utils;
 namespace MarcusW.VncClient.Protocol.Implementation.SecurityTypes
 {
     /// <summary>
-    /// A security type that implements Tight authentication with additional tunneling capabilities.
-    /// This is used primarily by TightVNC and supports multiple sub-authentication methods.
+    /// Tight security type (RFB security type 16) with optional tunneling and sub‑authentication methods,
+    /// compatible with TightVNC / LibVNC.
     /// </summary>
     public class TightSecurityType : ISecurityType
     {
@@ -26,7 +27,7 @@ namespace MarcusW.VncClient.Protocol.Implementation.SecurityTypes
         public string Name => "Tight";
 
         /// <inheritdoc />
-        public int Priority => 40; // Moderate priority, provides additional features
+        public int Priority => 20;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="TightSecurityType"/>.
@@ -46,72 +47,82 @@ namespace MarcusW.VncClient.Protocol.Implementation.SecurityTypes
             cancellationToken.ThrowIfCancellationRequested();
 
             ITransport transport = _context.Transport ?? throw new InvalidOperationException("Cannot access transport for authentication.");
+            Stream stream = transport.Stream;
 
-            // Step 1: Read number of supported tunneling types
-            var tunnelCountBuffer = new byte[4];
-            await transport.Stream.ReadExactlyAsync(tunnelCountBuffer, cancellationToken).ConfigureAwait(false);
-            uint tunnelCount = (uint)((tunnelCountBuffer[0] << 24) | (tunnelCountBuffer[1] << 16) | (tunnelCountBuffer[2] << 8) | tunnelCountBuffer[3]);
+            //
+            // 1. Tunneling negotiation (TightVNC style, 1‑byte fields)
+            //
+            // Server: 1 byte - number of tunnel types (N)
+            //         N bytes - list of tunnel type IDs
+            // Client: 1 byte - chosen tunnel type
+            //
 
-            // Step 2: Read supported tunneling types
-            var tunnelTypes = new List<uint>();
-            for (int i = 0; i < tunnelCount; i++)
+            byte[] singleByteBuffer = new byte[1];
+
+            // Read number of supported tunneling types (4 bytes) (Uint32 on TightVNC 2.8.85 source code)
+            ReadOnlyMemory<byte> tunnelCountMem = await stream.ReadAllAsync(4, cancellationToken).ConfigureAwait(false);
+            byte tunnelCount = tunnelCountMem.Span[3];
+
+            var tunnelTypes = new List<byte>(tunnelCount);
+            if (tunnelCount > 0)
             {
-                var tunnelTypeBuffer = new byte[4];
-                await transport.Stream.ReadExactlyAsync(tunnelTypeBuffer, cancellationToken).ConfigureAwait(false);
-                uint tunnelType = (uint)((tunnelTypeBuffer[0] << 24) | (tunnelTypeBuffer[1] << 16) | (tunnelTypeBuffer[2] << 8) | tunnelTypeBuffer[3]);
-                tunnelTypes.Add(tunnelType);
+                ReadOnlyMemory<byte> tunnelTypesMem = await stream.ReadAllAsync(tunnelCount, cancellationToken).ConfigureAwait(false);
+                tunnelTypes.AddRange(tunnelTypesMem.ToArray());
+
+                // Choose preferred tunneling type (0 = no tunneling)
+                byte chosenTunnelType = ChoosePreferredTunnelType(tunnelTypes);
+
+                // Send chosen tunneling type (1 byte)
+                byte[] tunnelOutput = new byte[4];
+                tunnelOutput[3] = chosenTunnelType;
+                await stream.WriteAsync(tunnelOutput, cancellationToken).ConfigureAwait(false);
+
+                // If non‑zero tunnel was chosen, we would need to establish the tunnel now.
+                // This implementation only supports "no tunneling".
+                if (chosenTunnelType != 0)
+                    throw new NotSupportedException($"Tight tunneling type {chosenTunnelType} is not supported.");
             }
 
-            // Step 3: Choose preferred tunneling type (0 = no tunneling)
-            uint chosenTunnelType = ChoosePreferredTunnelType(tunnelTypes);
 
-            // Step 4: Send chosen tunneling type
-            var chosenTunnelBuffer = new byte[4];
-            chosenTunnelBuffer[0] = (byte)(chosenTunnelType >> 24);
-            chosenTunnelBuffer[1] = (byte)(chosenTunnelType >> 16);
-            chosenTunnelBuffer[2] = (byte)(chosenTunnelType >> 8);
-            chosenTunnelBuffer[3] = (byte)(chosenTunnelType & 0xFF);
-            await transport.Stream.WriteAsync(chosenTunnelBuffer, cancellationToken).ConfigureAwait(false);
+            //
+            // 2. Authentication type negotiation (TightVNC style, 1‑byte fields)
+            //
+            // Server: 1 byte - number of auth types (M)
+            //         M bytes - list of auth type IDs
+            // Client: 1 byte - chosen auth type
+            //
 
-            // Step 5: Handle tunneling if required
-            if (chosenTunnelType != 0)
+            // Read number of supported authentication types (4 bytes)
+            ReadOnlyMemory<byte> authCountMem = await stream.ReadAllAsync(4, cancellationToken).ConfigureAwait(false);
+            byte authCount = authCountMem.Span[3];
+
+            var authTypes = new List<byte>(authCount);
+            if (authCount > 0)
             {
-                // For now, we'll implement basic support
-                // In a full implementation, you would handle specific tunnel types
-                throw new NotSupportedException($"Tunneling type {chosenTunnelType} is not yet supported.");
+                for (int i = 0; i < authCount; i++)
+                {
+                    ReadOnlyMemory<byte> authTypeMem = await stream.ReadAllAsync(16, cancellationToken).ConfigureAwait(false);
+                    authTypes.Add(authTypeMem.Span[3]);
+                }
             }
 
-            // Step 6: Read number of supported authentication types
-            var authCountBuffer = new byte[4];
-            await transport.Stream.ReadExactlyAsync(authCountBuffer, cancellationToken).ConfigureAwait(false);
-            uint authCount = (uint)((authCountBuffer[0] << 24) | (authCountBuffer[1] << 16) | (authCountBuffer[2] << 8) | authCountBuffer[3]);
-
-            // Step 7: Read supported authentication types
-            var authTypes = new List<uint>();
-            for (int i = 0; i < authCount; i++)
-            {
-                var authTypeBuffer = new byte[4];
-                await transport.Stream.ReadExactlyAsync(authTypeBuffer, cancellationToken).ConfigureAwait(false);
-                uint authType = (uint)((authTypeBuffer[0] << 24) | (authTypeBuffer[1] << 16) | (authTypeBuffer[2] << 8) | authTypeBuffer[3]);
-                authTypes.Add(authType);
-            }
-
-            // Step 8: Choose preferred authentication type
-            uint chosenAuthType = ChoosePreferredAuthType(authTypes);
+            // Choose preferred authentication type
+            byte chosenAuthType = ChoosePreferredAuthType(authTypes);
             if (chosenAuthType == 0)
                 throw new InvalidOperationException("No supported Tight authentication type found.");
 
-            // Step 9: Send chosen authentication type
-            var chosenAuthBuffer = new byte[4];
-            chosenAuthBuffer[0] = (byte)(chosenAuthType >> 24);
-            chosenAuthBuffer[1] = (byte)(chosenAuthType >> 16);
-            chosenAuthBuffer[2] = (byte)(chosenAuthType >> 8);
-            chosenAuthBuffer[3] = (byte)(chosenAuthType & 0xFF);
-            await transport.Stream.WriteAsync(chosenAuthBuffer, cancellationToken).ConfigureAwait(false);
+            // Send chosen authentication type (1 byte)
+            byte[] authOutput = new byte[4];
+            authOutput[3] = chosenAuthType;
+            singleByteBuffer[0] = chosenAuthType;
+            await stream.WriteAsync(authOutput, cancellationToken).ConfigureAwait(false);
 
-            // Step 10: Perform authentication based on chosen type
-            await PerformTightAuthenticationAsync(transport.Stream, chosenAuthType, authenticationHandler, cancellationToken).ConfigureAwait(false);
+            //
+            // 3. Perform sub‑authentication
+            //
+            await PerformTightAuthenticationAsync(stream, chosenAuthType, authenticationHandler, cancellationToken).ConfigureAwait(false);
 
+            // Standard RFB 3.8 SecurityResult (4 bytes) is read later by RfbHandshaker.
             return new AuthenticationResult();
         }
 
@@ -123,11 +134,16 @@ namespace MarcusW.VncClient.Protocol.Implementation.SecurityTypes
         /// </summary>
         /// <param name="tunnelTypes">Available tunneling types.</param>
         /// <returns>The chosen tunneling type (0 for no tunneling).</returns>
-        private static uint ChoosePreferredTunnelType(List<uint> tunnelTypes)
+        private static byte ChoosePreferredTunnelType(IReadOnlyCollection<byte> tunnelTypes)
         {
-            // Prefer no tunneling for simplicity (type 0)
-            // In a full implementation, you might prefer encrypted tunnels
-            return tunnelTypes.Contains(0u) ? 0u : tunnelTypes.FirstOrDefault();
+            // Prefer no tunneling for simplicity (type 0), matching most TightVNC setups.
+            if (tunnelTypes.Any(x => x == 0))
+            {
+                return 0;
+            }
+
+            // If server doesn't offer "no tunneling", just pick the first one (likely to fail later).
+            return tunnelTypes.FirstOrDefault();
         }
 
         /// <summary>
@@ -135,18 +151,18 @@ namespace MarcusW.VncClient.Protocol.Implementation.SecurityTypes
         /// </summary>
         /// <param name="authTypes">Available authentication types.</param>
         /// <returns>The chosen authentication type.</returns>
-        private static uint ChoosePreferredAuthType(List<uint> authTypes)
+        private static byte ChoosePreferredAuthType(IReadOnlyCollection<byte> authTypes)
         {
             // Tight authentication type codes:
-            // 1 = None
-            // 2 = VNC authentication
-            // 16 = Tight authentication
-            // 129 = Unix login authentication
+            //  1 = None
+            //  2 = VNC authentication
+            // 16 = Tight authentication (username/password)
+            //129 = Unix login authentication
 
             // Prefer in this order: Tight > VNC > Unix > None
-            uint[] preferredOrder = { 16, 2, 129, 1 };
-            
-            foreach (uint preferred in preferredOrder)
+            byte[] preferredOrder = { 16, 2, 129, 1 };
+
+            foreach (byte preferred in preferredOrder)
             {
                 if (authTypes.Contains(preferred))
                     return preferred;
@@ -162,23 +178,24 @@ namespace MarcusW.VncClient.Protocol.Implementation.SecurityTypes
         /// <param name="authType">The chosen authentication type.</param>
         /// <param name="authenticationHandler">The authentication handler.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
-        private async Task PerformTightAuthenticationAsync(Stream stream, uint authType, IAuthenticationHandler authenticationHandler, CancellationToken cancellationToken)
+        private async Task PerformTightAuthenticationAsync(Stream stream, byte authType, IAuthenticationHandler authenticationHandler,
+            CancellationToken cancellationToken)
         {
             switch (authType)
             {
                 case 1: // None
-                    // No authentication required
+                    // No extra authentication required; SecurityResult will follow.
                     break;
 
-                case 2: // VNC authentication
+                case 2: // VNC authentication (same as standard VNC auth, but inside Tight)
                     await PerformVncAuthenticationAsync(stream, authenticationHandler, cancellationToken).ConfigureAwait(false);
                     break;
 
-                case 16: // Tight authentication
+                case 16: // Tight-specific authentication (username/password)
                     await PerformTightSpecificAuthenticationAsync(stream, authenticationHandler, cancellationToken).ConfigureAwait(false);
                     break;
 
-                case 129: // Unix login authentication
+                case 129: // Unix login authentication (username/password)
                     await PerformUnixLoginAuthenticationAsync(stream, authenticationHandler, cancellationToken).ConfigureAwait(false);
                     break;
 
@@ -188,23 +205,20 @@ namespace MarcusW.VncClient.Protocol.Implementation.SecurityTypes
         }
 
         /// <summary>
-        /// Performs VNC-style authentication within Tight security.
+        /// Performs VNC‑style authentication within Tight security.
         /// </summary>
-        /// <param name="stream">The transport stream.</param>
-        /// <param name="authenticationHandler">The authentication handler.</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
         private async Task PerformVncAuthenticationAsync(Stream stream, IAuthenticationHandler authenticationHandler, CancellationToken cancellationToken)
         {
-            // This is similar to standard VNC authentication
             // Read challenge (16 bytes)
-            var challengeBuffer = new byte[16];
-            await stream.ReadExactlyAsync(challengeBuffer, cancellationToken).ConfigureAwait(false);
+            ReadOnlyMemory<byte> challengeMem = await stream.ReadAllAsync(16, cancellationToken).ConfigureAwait(false);
+            byte[] challengeBuffer = challengeMem.ToArray();
 
             // Get password
             PasswordAuthenticationInput input = await authenticationHandler
-                .ProvideAuthenticationInputAsync(_context.Connection, this, new PasswordAuthenticationInputRequest()).ConfigureAwait(false);
+                .ProvideAuthenticationInputAsync(_context.Connection, this, new PasswordAuthenticationInputRequest())
+                .ConfigureAwait(false);
 
-            // Create DES response (same as VNC auth)
+            // Create DES response (same as classic VNC auth)
             byte[] response = CreateVncStyleResponse(challengeBuffer, input.Password);
 
             // Send response
@@ -212,70 +226,80 @@ namespace MarcusW.VncClient.Protocol.Implementation.SecurityTypes
         }
 
         /// <summary>
-        /// Performs Tight-specific authentication.
+        /// Performs Tight‑specific authentication (rfbTightTightAuth).
         /// </summary>
-        /// <param name="stream">The transport stream.</param>
-        /// <param name="authenticationHandler">The authentication handler.</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
         private async Task PerformTightSpecificAuthenticationAsync(Stream stream, IAuthenticationHandler authenticationHandler, CancellationToken cancellationToken)
         {
-            // Tight-specific authentication typically involves username and password
             CredentialsAuthenticationInput input = await authenticationHandler
-                .ProvideAuthenticationInputAsync(_context.Connection, this, new CredentialsAuthenticationInputRequest()).ConfigureAwait(false);
+                .ProvideAuthenticationInputAsync(_context.Connection, this, new CredentialsAuthenticationInputRequest())
+                .ConfigureAwait(false);
 
-            // Send username length and username
             byte[] usernameBytes = Encoding.UTF8.GetBytes(input.Username ?? string.Empty);
-            await stream.WriteAsync(new[] { (byte)usernameBytes.Length }, cancellationToken).ConfigureAwait(false);
-            await stream.WriteAsync(usernameBytes, cancellationToken).ConfigureAwait(false);
-
-            // Send password length and password
             byte[] passwordBytes = Encoding.UTF8.GetBytes(input.Password ?? string.Empty);
+
+            if (usernameBytes.Length > byte.MaxValue)
+                throw new InvalidOperationException("Tight username must not exceed 255 bytes in length.");
+            if (passwordBytes.Length > byte.MaxValue)
+                throw new InvalidOperationException("Tight password must not exceed 255 bytes in length.");
+
+            // Send username length (1 byte) and username
+            await stream.WriteAsync(new[] { (byte)usernameBytes.Length }, cancellationToken).ConfigureAwait(false);
+            if (usernameBytes.Length > 0)
+                await stream.WriteAsync(usernameBytes, cancellationToken).ConfigureAwait(false);
+
+            // Send password length (1 byte) and password
             await stream.WriteAsync(new[] { (byte)passwordBytes.Length }, cancellationToken).ConfigureAwait(false);
-            await stream.WriteAsync(passwordBytes, cancellationToken).ConfigureAwait(false);
+            if (passwordBytes.Length > 0)
+                await stream.WriteAsync(passwordBytes, cancellationToken).ConfigureAwait(false);
 
             // Clear sensitive data
             Array.Clear(passwordBytes, 0, passwordBytes.Length);
         }
 
         /// <summary>
-        /// Performs Unix login authentication.
+        /// Performs Unix login authentication (rfbTightUnixLoginAuth).
         /// </summary>
-        /// <param name="stream">The transport stream.</param>
-        /// <param name="authenticationHandler">The authentication handler.</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
         private async Task PerformUnixLoginAuthenticationAsync(Stream stream, IAuthenticationHandler authenticationHandler, CancellationToken cancellationToken)
         {
-            // Unix login authentication uses system credentials
             CredentialsAuthenticationInput input = await authenticationHandler
-                .ProvideAuthenticationInputAsync(_context.Connection, this, new CredentialsAuthenticationInputRequest()).ConfigureAwait(false);
+                .ProvideAuthenticationInputAsync(_context.Connection, this, new CredentialsAuthenticationInputRequest())
+                .ConfigureAwait(false);
 
-            // Format: username_length + username + password_length + password
             byte[] usernameBytes = Encoding.UTF8.GetBytes(input.Username ?? string.Empty);
             byte[] passwordBytes = Encoding.UTF8.GetBytes(input.Password ?? string.Empty);
+
+            if (usernameBytes.Length > byte.MaxValue)
+                throw new InvalidOperationException("Unix login username must not exceed 255 bytes in length.");
+            if (passwordBytes.Length > byte.MaxValue)
+                throw new InvalidOperationException("Unix login password must not exceed 255 bytes in length.");
 
             // Send username
             await stream.WriteAsync(new[] { (byte)usernameBytes.Length }, cancellationToken).ConfigureAwait(false);
-            await stream.WriteAsync(usernameBytes, cancellationToken).ConfigureAwait(false);
+            if (usernameBytes.Length > 0)
+                await stream.WriteAsync(usernameBytes, cancellationToken).ConfigureAwait(false);
 
             // Send password
             await stream.WriteAsync(new[] { (byte)passwordBytes.Length }, cancellationToken).ConfigureAwait(false);
-            await stream.WriteAsync(passwordBytes, cancellationToken).ConfigureAwait(false);
+            if (passwordBytes.Length > 0)
+                await stream.WriteAsync(passwordBytes, cancellationToken).ConfigureAwait(false);
 
             // Clear sensitive data
             Array.Clear(passwordBytes, 0, passwordBytes.Length);
         }
 
         /// <summary>
-        /// Creates a VNC-style DES encrypted response.
+        /// Creates a VNC‑style DES encrypted response (challenge‑response).
         /// </summary>
-        /// <param name="challenge">The challenge from the server.</param>
-        /// <param name="password">The password.</param>
-        /// <returns>The encrypted response.</returns>
         private static byte[] CreateVncStyleResponse(byte[] challenge, string password)
         {
-            // Use the first 8 characters/bytes of the password as the DES key
+            if (challenge == null)
+                throw new ArgumentNullException(nameof(challenge));
+            if (challenge.Length != 16)
+                throw new ArgumentException("VNC challenge must be exactly 16 bytes long.", nameof(challenge));
+
+            // Use the first 8 characters/bytes of the password as the DES key (ASCII, like TightVNC).
             var key = new byte[8];
-            byte[] passwordBytes = Encoding.UTF8.GetBytes(password ?? string.Empty);
+            byte[] passwordBytes = Encoding.ASCII.GetBytes(password ?? string.Empty);
             Array.Copy(passwordBytes, key, Math.Min(key.Length, passwordBytes.Length));
 
             // Reverse bit order of all bytes in key (VNC requirement)
@@ -285,19 +309,20 @@ namespace MarcusW.VncClient.Protocol.Implementation.SecurityTypes
                 byte newValue = 0;
                 for (var offset = 0; offset < 8; offset++)
                 {
-                    if ((value & (0b1 << offset)) != 0)
-                        newValue |= (byte)(0b10000000 >> offset);
+                    if ((value & (1 << offset)) != 0)
+                        newValue |= (byte)(0x80 >> offset);
                 }
+
                 key[i] = newValue;
             }
 
-            // Encrypt challenge with DES
-            using var desProvider = new System.Security.Cryptography.DESCryptoServiceProvider 
-            { 
-                Key = key, 
-                Mode = System.Security.Cryptography.CipherMode.ECB 
-            };
-            using var encryptor = desProvider.CreateEncryptor();
+            // Encrypt challenge with DES (ECB, no padding)
+            using var desProvider = DES.Create();
+            desProvider.Key = key;
+            desProvider.Mode = CipherMode.ECB;
+            desProvider.Padding = PaddingMode.None;
+
+            using ICryptoTransform encryptor = desProvider.CreateEncryptor();
 
             var response = new byte[16];
             encryptor.TransformBlock(challenge, 0, challenge.Length, response, 0);

@@ -1,16 +1,29 @@
 using MarcusW.VncClient.Protocol.SecurityTypes;
 using MarcusW.VncClient.Security;
 using MarcusW.VncClient.Utils;
+using Org.BouncyCastle.Security;
 using System;
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Security.Cryptography;
+//using System.Numerics;
+//using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Numerics;
+using Org.BouncyCastle.Crypto;
+using Org.BouncyCastle.Crypto.Digests;
+using Org.BouncyCastle.Crypto.Encodings;
+using Org.BouncyCastle.Crypto.Engines;
+using Org.BouncyCastle.Crypto.Generators;
+using Org.BouncyCastle.Crypto.Modes;
+using Org.BouncyCastle.Crypto.Paddings;
+using Org.BouncyCastle.Crypto.Parameters;
+using Org.BouncyCastle.Math;
+using Org.BouncyCastle.Utilities;
+using Org.BouncyCastle.Utilities.Collections;
+using System.Runtime.Intrinsics.Wasm;
 
 namespace MarcusW.VncClient.Protocol.Implementation.SecurityTypes
 {
@@ -61,18 +74,17 @@ namespace MarcusW.VncClient.Protocol.Implementation.SecurityTypes
             ITransport transport = _context.Transport ?? throw new InvalidOperationException("Cannot access transport for authentication.");
 
             // Read & resend authentication mode to start challenge-response.
-            var modeMem = await transport.Stream.ReadAllAsync(6, cancellationToken).ConfigureAwait(false);
-            ReadOnlyMemory<byte> auth = modeMem.Slice(5,1); //2 = Ultra mode with 2 passwords (normal & viewonly), 113 = MSLogonII mode
-
-            // Enhanced Ultra authentication with MS Logon support
-            await transport.Stream.WriteAsync(auth, cancellationToken).ConfigureAwait(false);
+            var authModeBytes = new byte[6];
+            await transport.Stream.ReadExactlyAsync(authModeBytes, cancellationToken).ConfigureAwait(false);
+            var authMode = new byte[1] { authModeBytes[5] }; //2 = Ultra mode with 2 passwords (normal & viewonly), 113 = MSLogonII mode
+            await transport.Stream.WriteAsync(authMode, cancellationToken).ConfigureAwait(false);
 
             //Standard UltraVNC authentication
-            if (auth.Span[0] == 2)
+            if (authMode[0] == 2)
             {
                 // Read challenge from server (16 bytes)
-                var challengeMem = await transport.Stream.ReadAllAsync(16, cancellationToken).ConfigureAwait(false);
-                byte[] challengeBuffer = challengeMem.ToArray();
+                byte[] challengeBuffer = new byte[16];
+                await transport.Stream.ReadExactlyAsync(challengeBuffer, cancellationToken).ConfigureAwait(false);
 
                 // Request password input
                 PasswordAuthenticationInput input = await authenticationHandler
@@ -87,45 +99,71 @@ namespace MarcusW.VncClient.Protocol.Implementation.SecurityTypes
                 return new AuthenticationResult();
             }
             // MS Logon II UltraVNC authentication
-            else if (auth.Span[0] == 113)
+            else if (authMode[0] == 113)
             {
                 // Read DH params (8-byte big-endian each)
-                var genBytes = (await transport.Stream.ReadAllAsync(8, cancellationToken)).ToArray();
-                var modBytes = (await transport.Stream.ReadAllAsync(8, cancellationToken)).ToArray();
-                var pubBytes = (await transport.Stream.ReadAllAsync(8, cancellationToken)).ToArray();
+                //var genBytes = (await transport.Stream.ReadAllAsync(8, cancellationToken)).ToArray();
+                //var modBytes = (await transport.Stream.ReadAllAsync(8, cancellationToken)).ToArray();
+                //var pubBytes = (await transport.Stream.ReadAllAsync(8, cancellationToken)).ToArray();
+
+                byte[] generatorBytes = new byte[8];
+                byte[] modulusBytes = new byte[8];
+                byte[] publicBytes = new byte[8];
+
+                await transport.Stream.ReadExactlyAsync(generatorBytes, cancellationToken).ConfigureAwait(false);
+                await transport.Stream.ReadExactlyAsync(modulusBytes, cancellationToken).ConfigureAwait(false);
+                await transport.Stream.ReadExactlyAsync(publicBytes, cancellationToken).ConfigureAwait(false);
+
 
                 // Build BigIntegers as unsigned big-endian
-                var generatorInt = new BigInteger(genBytes, isUnsigned: true, isBigEndian: true);
-                var modulusInt = new BigInteger(modBytes, isUnsigned: true, isBigEndian: true);
-                var pubvalInt = new BigInteger(pubBytes, isUnsigned: true, isBigEndian: true);
+                //var generatorInt = new BigInteger(genBytes, isUnsigned: true, isBigEndian: true);
+                //var modulusInt = new BigInteger(modBytes, isUnsigned: true, isBigEndian: true);
+                //var pubvalInt = new BigInteger(pubBytes, isUnsigned: true, isBigEndian: true);
+                var generatorInt = new BigInteger(1, generatorBytes, true);
+                var modulusInt = new BigInteger(1,modulusBytes,true);
+                var publicInt = new BigInteger(1,publicBytes,true);
 
                 Debug.WriteLine($"g={generatorInt}, m={modulusInt}, p={modulusInt}");
 
                 // Generate PrivateX
-                byte[] xBytes = new byte[8];
-                using (var rng = RandomNumberGenerator.Create()) rng.GetBytes(xBytes);
-                var privateX = new BigInteger(xBytes, isUnsigned: true, isBigEndian: true);
-                if (privateX.IsZero) privateX = BigInteger.One;
-                privateX %= (modulusInt - BigInteger.One);
-                if (privateX.IsZero) privateX = BigInteger.One;
+                byte[] clientRandomBytes = new byte[8];
+                //using (var rng = RandomNumberGenerator.Create()) rng.GetBytes(xBytes);
+
+                var randomGenerator = new SecureRandom();
+                randomGenerator.NextBytes(clientRandomBytes);
+
+                //var privateX = new BigInteger(clientRandomBytes, isUnsigned: true, isBigEndian: true);
+                //if (privateX.IsZero) privateX = BigInteger.One;
+                //privateX %= (modulusInt - BigInteger.One);
+                //if (privateX.IsZero) privateX = BigInteger.One;
+                //Debug.WriteLine($"X={privateX}");
+
+                var privateX = new BigInteger(1, clientRandomBytes, true);
+                if (privateX.Equals(BigInteger.Zero)) privateX = BigInteger.One;
+                privateX = privateX.Mod(modulusInt.Subtract(BigInteger.One));
+                if (privateX.Equals(BigInteger.Zero)) privateX = BigInteger.One;
                 Debug.WriteLine($"X={privateX}");
 
+
                 // Compute client public B = g^x mod p
-                var publicB = BigInteger.ModPow(generatorInt, privateX, modulusInt);
+                //var publicB = BigInteger.ModPow(generatorInt, privateX, modulusInt);
+                //Debug.WriteLine($"B={publicB}");
+                var publicB = generatorInt.ModPow(privateX, modulusInt);
                 Debug.WriteLine($"B={publicB}");
 
                 // Send publicB as 8-byte big-endian
-                byte[] publicBBytes = new byte[8];
-                WriteBigEndianU64(publicB, publicBBytes);
+                byte[] publicBBytes = BigIntegers.AsUnsignedByteArray(8, publicB);
+                //WriteBigEndianU64(publicB, publicBBytes);
                 await transport.Stream.WriteAsync(publicBBytes, cancellationToken).ConfigureAwait(false);
 
                 // Compute shared secret S = A^x mod p
-                var sharedSecret = BigInteger.ModPow(pubvalInt, privateX, modulusInt);
+                //var sharedSecret = BigInteger.ModPow(publicInt, privateX, modulusInt);
+                //Debug.WriteLine($"Secret={sharedSecret}");
+                var sharedSecret = publicInt.ModPow(privateX, modulusInt);
                 Debug.WriteLine($"Secret={sharedSecret}");
 
                 // Export secret as 8-byte big-endian
-                byte[] sharedSecretByte = new byte[8];
-                WriteBigEndianU64(sharedSecret, sharedSecretByte);
+                byte[] sharedSecretByte = BigIntegers.AsUnsignedByteArray(8, sharedSecret);
 
                 CredentialsAuthenticationInput input = await authenticationHandler
                     .ProvideAuthenticationInputAsync(_context.Connection, this, new CredentialsAuthenticationInputRequest()).ConfigureAwait(false);
@@ -138,7 +176,7 @@ namespace MarcusW.VncClient.Protocol.Implementation.SecurityTypes
             }
             else
             {
-                throw new NotSupportedException($"Ultra authentication mode {auth.Span[0]} is not supported by {this.Name}.");
+                throw new NotSupportedException($"Ultra authentication mode {authMode[0]} is not supported by {this.Name}.");
             }
 
         }
@@ -158,30 +196,31 @@ namespace MarcusW.VncClient.Protocol.Implementation.SecurityTypes
             byte[] pwdBytes = Encoding.ASCII.GetBytes(password ?? string.Empty);
             Array.Copy(pwdBytes, key, Math.Min(8, pwdBytes.Length));
 
-            // Reverse bit order of all byes in key
-            for (var i = 0; i < key.Length; i++)
-            {
-                byte value = key[i];
-                byte newValue = 0;
-                for (var offset = 0; offset < 8; offset++)
-                {
-                    if ((value & (0b1 << offset)) != 0)
-                        newValue |= (byte)(0b10000000 >> offset);
-                }
+            key = ReverseBitOrder(key);
 
-                key[i] = newValue;
-            }
+            //// Encrypt challenge
+            //using var desProvider = DES.Create();
+            //desProvider.Key = key;
+            //desProvider.Mode = CipherMode.ECB;
+            //desProvider.Padding = PaddingMode.None;
+            //using var encryptor = desProvider.CreateEncryptor();
 
-            // Encrypt challenge
-            using var desProvider = DES.Create();
-            desProvider.Key = key;
-            desProvider.Mode = CipherMode.ECB;
-            desProvider.Padding = PaddingMode.None;
-            using var encryptor = desProvider.CreateEncryptor();
+            //// Encrypt challenge with key
+            //var response = new byte[16];
+            //encryptor.TransformBlock(challenge.ToArray(), 0, challenge.Length, response, 0);
 
-            // Encrypt challenge with key
+            var engine = new DesEngine();
+            var keyParam = new KeyParameter(key);
+            engine.Init(true, keyParam);
+
             var response = new byte[16];
-            encryptor.TransformBlock(challenge.ToArray(), 0, challenge.Length, response, 0);
+            int blockSize = engine.GetBlockSize();
+            for (int offset = 0; offset < challenge.Length; offset += blockSize)
+            {
+                engine.ProcessBlock(challenge, offset, response, offset);
+            }    
+
+
 
             return response;
         }
@@ -206,9 +245,14 @@ namespace MarcusW.VncClient.Protocol.Implementation.SecurityTypes
             var vncUserBytes = new byte[USERLENGTH];
             var vncPassBytes = new byte[PASSLENGTH];
 
-            //FIll with random data to avoid predictable padding
-            RandomNumberGenerator.Fill(vncUserBytes);
-            RandomNumberGenerator.Fill(vncPassBytes);
+            //Fill with random data to avoid predictable padding
+
+            var randomGenerator = new SecureRandom();
+            randomGenerator.NextBytes(vncUserBytes);
+            randomGenerator.NextBytes(vncPassBytes);
+
+            //RandomNumberGenerator.Fill(vncUserBytes);
+            //RandomNumberGenerator.Fill(vncPassBytes);
 
             Array.Copy(userBytes, vncUserBytes, Math.Min(userBytes.Length, USERLENGTH));
             Array.Copy(passBytes, vncPassBytes, Math.Min(passBytes.Length, PASSLENGTH));
@@ -219,26 +263,50 @@ namespace MarcusW.VncClient.Protocol.Implementation.SecurityTypes
 
             // Prepare DES key from shared secret
             byte[] desKey = PrepareDesKey(secretKey);
+            byte[] reversedSecretKey = ReverseBitOrder(secretKey);
             // Encrypt challenge
-            using var desProvider = DES.Create();
-            desProvider.Key = desKey;
-            desProvider.Mode = CipherMode.CBC;
-            desProvider.Padding = PaddingMode.None;
+            //using var desProvider = DES.Create();
+            //desProvider.Key = desKey;
+            //desProvider.Mode = CipherMode.CBC;
+            //desProvider.Padding = PaddingMode.None;
 
-            var response = new byte[USERLENGTH + PASSLENGTH];
+            // var response = new byte[USERLENGTH + PASSLENGTH];
 
-            desProvider.IV = secretKey;
-            using (var encUser = desProvider.CreateEncryptor())
+            //desProvider.IV = secretKey;
+            //using (var encUser = desProvider.CreateEncryptor())
+            //{
+            //    // one shot is fine since length is multiple of 8
+            //    encUser.TransformBlock(vncUserBytes, 0, USERLENGTH, response, 0);
+            //}
+
+            //desProvider.IV = secretKey;
+            //using (var encUser = desProvider.CreateEncryptor())
+            //{
+            //    // one shot is fine since length is multiple of 8
+            //    encUser.TransformBlock(vncPassBytes, 0, PASSLENGTH, response, USERLENGTH);
+            //}
+
+
+            var desEngine = new DesEngine();
+            var cbcBlockCipher = new CbcBlockCipher(desEngine);
+            var keyParam = new KeyParameter(desKey);
+            var keyParamWithIV = new ParametersWithIV(keyParam, secretKey);
+
+            byte[] response = new byte[USERLENGTH + PASSLENGTH];
+
+            // --- Szyfrowanie USER ---
+            cbcBlockCipher.Init(true, keyParamWithIV);
+            for (int i = 0; i < USERLENGTH; i += 8)
             {
-                // one shot is fine since length is multiple of 8
-                encUser.TransformBlock(vncUserBytes, 0, USERLENGTH, response, 0);
+                cbcBlockCipher.ProcessBlock(vncUserBytes, i, response, i);
             }
 
-            desProvider.IV = secretKey;
-            using (var encUser = desProvider.CreateEncryptor())
+            // --- Szyfrowanie PASS ---
+            // Ponowna inicjalizacja resetuje IV (kluczowe dla UltraVNC)
+            cbcBlockCipher.Init(true, keyParamWithIV);
+            for (int i = 0; i < PASSLENGTH; i += 8)
             {
-                // one shot is fine since length is multiple of 8
-                encUser.TransformBlock(vncPassBytes, 0, PASSLENGTH, response, USERLENGTH);
+                cbcBlockCipher.ProcessBlock(vncPassBytes, i, response, USERLENGTH + i);
             }
 
             return response;
@@ -266,12 +334,6 @@ namespace MarcusW.VncClient.Protocol.Implementation.SecurityTypes
             }
             return count;
         }
-        static void WriteBigEndianU64(BigInteger value, byte[] dest8)
-        {
-            // Reduce to 64-bit (unsigned) and write big-endian
-            ulong v = (ulong)(value & ((BigInteger)ulong.MaxValue));
-            BinaryPrimitives.WriteUInt64BigEndian(dest8, v);
-        }
 
         static byte[] PrepareDesKey(byte[] secretKey)
         {
@@ -293,6 +355,23 @@ namespace MarcusW.VncClient.Protocol.Implementation.SecurityTypes
             }
 
             return key;
+        }
+
+        static byte[] ReverseBitOrder(byte[] input)
+        {
+            byte[] output = new byte[input.Length];
+            for (int i = 0; i < input.Length; i++)
+            {
+                byte value = input[i];
+                byte newValue = 0;
+                for (int offset = 0; offset < 8; offset++)
+                {
+                    if ((value & (0b1 << offset)) != 0)
+                        newValue |= (byte)(0b10000000 >> offset);
+                }
+                output[i] = newValue;
+            }
+            return output;
         }
     }
 }

@@ -12,7 +12,7 @@ namespace MarcusW.VncClient.Protocol.Implementation.EncodingTypes.Pseudo
         private readonly RfbConnectionContext _context;
 
         /// <inheritdoc />
-        public override int Id => (int)WellKnownEncodingType.JpegQualityLevelLow + RoundQualityLevel(_context.Connection.Parameters.JpegQualityLevel) - 1;
+        public override int Id => (int)WellKnownEncodingType.JpegQualityLevel01 + RoundQualityLevel(_context.Connection.Parameters.JpegQualityLevel) - 1;
 
         /// <inheritdoc />
         public override string Name => $"JPEG Quality Level: {RoundQualityLevel(_context.Connection.Parameters.JpegQualityLevel)}/10";

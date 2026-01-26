@@ -125,20 +125,20 @@ namespace MarcusW.VncClient.Protocol.Implementation
             yield return new NoneSecurityType(context);
             yield return new VncAuthenticationSecurityType(context);
             
-            // RSA-based authentication
-            yield return new Ra2SecurityType(context);
-            yield return new Ra2neSecurityType(context);
-            
+            // RSA-based authentication (not working at all)
+            //yield return new Ra2SecurityType(context);//
+            yield return new Ra2neSecurityType(context);//
+
             // Extended authentication with additional features
             yield return new TightSecurityType(context);
             yield return new UltraVNCSecurityType(context);
-            //yield return new UvncMsLogonIISecurityType(context);
 
             // Encrypted transport security types
             yield return new TlsSecurityType(context);
             yield return new VeNCryptAuthenticationSecurityType(context);
             yield return new SecureTunnelSecurityType(context);
             yield return new IntegratedSshSecurityType(context);
+
             
             // SASL and other authentication methods
             yield return new SaslSecurityType(context);
